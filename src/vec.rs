@@ -5,13 +5,15 @@ use serde::{ser::SerializeSeq, Deserialize, Serialize, Serializer};
 
 pub type Vector2f = Vector<f32, 2>;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Vector<T: Num + Copy, const N: usize> {
     data: [T; N],
 }
 
+#[allow(dead_code)]
 impl<T: Num + Copy> Vector<T, 2> {
-    pub fn new_with_data(x: T, y: T) -> Self {
+    pub fn new(x: T, y: T) -> Self {
         Self { data: [x, y] }
     }
 
@@ -36,6 +38,7 @@ impl<T: Num + Copy> Vector<T, 2> {
     }
 }
 
+#[allow(dead_code)]
 impl Vector<f32, 2> {
     pub fn distance_to(&self, other: Vector<f32, 2>) -> f32 {
         let x = self.x() - other.x();
@@ -51,7 +54,7 @@ impl Vector<f32, 2> {
 
     pub fn normalize(&self) -> Vector<f32, 2> {
         let length = self.length();
-        Vector::new_with_data(self.x() / length, self.y() / length)
+        Vector::new(self.x() / length, self.y() / length)
     }
 
     pub fn length(&self) -> f32 {
@@ -70,16 +73,10 @@ impl Vector<f32, 2> {
         self.y().atan2(self.x())
     }
 
-    pub fn angle_rel_to_point(&self, point: Vector<f32, 2>) -> f32 {
-        let x = self.x() - point.x();
-        let y = self.y() - point.y();
-        y.atan2(x)
-    }
-
     pub fn rotate(&self, angle: f32) -> Vector<f32, 2> {
         let x = self.x() * angle.cos() - self.y() * angle.sin();
         let y = self.x() * angle.sin() + self.y() * angle.cos();
-        Vector::new_with_data(x, y)
+        Vector::new(x, y)
     }
 }
 
@@ -154,7 +151,7 @@ impl<'de> Deserialize<'de> for Vector2f {
             {
                 let x = seq.next_element()?.ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
                 let y = seq.next_element()?.ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
-                Ok(Vector2f::new_with_data(x, y))
+                Ok(Vector2f::new(x, y))
             }
         }
 

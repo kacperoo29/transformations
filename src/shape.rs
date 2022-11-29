@@ -2,40 +2,24 @@ use serde::{Serialize, Deserialize};
 
 use crate::vec::Vector2f;
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum ShapeState {
-    Drawing,
-    Complete
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Shape {
-    state: ShapeState,
     points: Vec<Vector2f>,
 }
 
 impl Shape {
     pub fn new() -> Shape {
         Shape {
-            state: ShapeState::Drawing,
             points: Vec::new(),
         }
     }
 
-    pub fn add_point(&mut self, point: Vector2f) {
-        if self.state == ShapeState::Complete {
-            return;
-        }
-        
+    pub fn add_point(&mut self, point: Vector2f) {        
         self.points.push(point);
     }
 
     pub fn get_points(&self) -> &Vec<Vector2f> {
         &self.points
-    }
-
-    pub fn get_state(&self) -> &ShapeState {
-        &self.state
     }
 
     pub fn shift(&mut self, shift: Vector2f) {
@@ -67,7 +51,9 @@ impl Shape {
 
     pub fn intersect_with_point(&self, point: Vector2f) -> bool {
         let mut intersections = 0;
-        let mut prev_point = self.points.last().unwrap();
+        let Some(mut prev_point) = self.points.last() else {
+            return false;
+        };
 
         for pt in self.points.iter() {
             if (pt.y() > point.y()) != (prev_point.y() > point.y()) {

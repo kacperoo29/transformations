@@ -3,12 +3,10 @@ mod vec;
 
 use std::{cell::RefCell, rc::Rc};
 
-use js_sys::Uint32Array;
 use shape::Shape;
-use vec::Vector2f;
-use wasm_bindgen::{prelude::Closure, JsCast, JsValue};
+use wasm_bindgen::{prelude::Closure, JsCast};
 use web_sys::{window, FileReader, HtmlElement, HtmlInputElement, HtmlSelectElement};
-use yew::prelude::*;
+use yew::{prelude::*};
 
 enum Mode {
     Draw,
@@ -22,14 +20,21 @@ enum Msg {
     MouseUp(MouseEvent),
     MouseMove(MouseEvent),
     MouseLeave(MouseEvent),
+    ShiftDown,
+    ShiftUp,
     ModeChange(Mode),
     Clear,
     Save,
     Load(String),
-    ShiftShape { vector: Vector2f },
-    RotateShape { angle: f32, pivot: Vector2f },
-    ScaleShape { scale: Vector2f, pivot: Vector2f },
     None,
+    FinishShape,
+    ShiftVectorChange(vec::Vector2f),
+    ScaleVectorChange(vec::Vector2f),
+    RotateAngleChange(f32),
+    ApplyTransform,
+    PivotChange(vec::Vector2f),
+    CtrlDown,
+    CtrlUp,
 }
 
 struct App {
@@ -41,14 +46,58 @@ struct App {
     is_mouse_down: bool,
     mouse_origin: Option<vec::Vector2f>,
     mouse_pos: Option<vec::Vector2f>,
+    mouse_delta: Option<vec::Vector2f>,
     selected_shape: Option<Rc<RefCell<Shape>>>,
+    shift_is_down: bool,
+    ctrl_is_down: bool,
+
+    shift_vector: vec::Vector2f,
+    scale_vector: vec::Vector2f,
+    rotate_angle: f32,
 }
 
 impl Component for App {
     type Message = Msg;
     type Properties = ();
 
-    fn create(_ctx: &Context<Self>) -> Self {
+    fn create(ctx: &Context<Self>) -> Self {
+        let on_shift_down = ctx.link().callback(|_| Msg::ShiftDown);
+        let on_shift_up = ctx.link().callback(|_| Msg::ShiftUp);
+        let on_ctrl_down = ctx.link().callback(|_| Msg::CtrlDown);
+        let on_ctrl_up = ctx.link().callback(|_| Msg::CtrlUp);
+        let on_shift_down_closure = Closure::wrap(Box::new(move |event: KeyboardEvent| {
+            if event.shift_key() {
+                on_shift_down.emit(());
+            }
+            if event.ctrl_key() {
+                on_ctrl_down.emit(());
+            }
+        }) as Box<dyn FnMut(_)>);
+        let on_shift_up_closure = Closure::wrap(Box::new(move |event: KeyboardEvent| {
+            if !event.shift_key() {
+                on_shift_up.emit(());
+            }
+            if !event.ctrl_key() {
+                on_ctrl_up.emit(());
+            }
+        }) as Box<dyn FnMut(_)>);
+
+        window()
+            .unwrap()
+            .add_event_listener_with_callback(
+                "keydown",
+                on_shift_down_closure.as_ref().unchecked_ref(),
+            )
+            .unwrap();
+
+        window()
+            .unwrap()
+            .add_event_listener_with_callback("keyup", on_shift_up_closure.as_ref().unchecked_ref())
+            .unwrap();
+
+        on_shift_down_closure.forget();
+        on_shift_up_closure.forget();
+
         Self {
             mode: Mode::Draw,
             shapes: Vec::new(),
@@ -58,7 +107,14 @@ impl Component for App {
             is_mouse_down: false,
             mouse_origin: None,
             mouse_pos: None,
+            mouse_delta: None,
             selected_shape: None,
+            shift_is_down: false,
+            ctrl_is_down: false,
+
+            shift_vector: vec::Vector2f::new(0.0, 0.0),
+            scale_vector: vec::Vector2f::new(1.0, 1.0),
+            rotate_angle: 0.0,
         }
     }
 
@@ -107,6 +163,10 @@ impl Component for App {
             <button onclick={ctx.link().callback(|_| Msg::Save)}>{"Save"}</button>
         };
 
+        let finish_shape_button = html! {
+            <button onclick={ctx.link().callback(|_| Msg::FinishShape)}>{"Finish Shape"}</button>
+        };
+
         let load_cb = ctx
             .link()
             .callback(|json_string: String| Msg::Load(json_string));
@@ -135,6 +195,115 @@ impl Component for App {
             />
         };
 
+        let shift_vector = self.shift_vector.clone();
+        let scale_vector = self.scale_vector.clone();
+        let pivot = self.pivot.unwrap_or(vec::Vector2f::new(0.0, 0.0));
+        let input_boxes = html! {
+            <>
+                <div>
+                    <label>{"Pivot: "}</label>
+                    <input
+                        type="number"
+                        min="0"
+                        max="800"
+                        value={pivot.x().to_string()}
+                        oninput={ctx.link().callback(move |e: InputEvent| {
+                            let pivot = pivot.clone();
+                            let target = e.target().unwrap();
+                            let target: HtmlInputElement = target.dyn_into().unwrap();
+                            let value = target.value_as_number() as f32;
+                            Msg::PivotChange(vec::Vector2f::new(value, pivot.y()))
+                        })}
+                    />
+                    <input
+                        type="number"
+                        min="0"
+                        max="600"
+                        value={pivot.y().to_string()}
+                        oninput={ctx.link().callback(move |e: InputEvent| {
+                            let pivot = pivot.clone();
+                            let target = e.target().unwrap();
+                            let target: HtmlInputElement = target.dyn_into().unwrap();
+                            let value = target.value_as_number() as f32;
+                            Msg::PivotChange(vec::Vector2f::new(pivot.x(), value))
+                        })}
+                    />
+                </div>
+                <div>
+                    <label>{"Shift vector: "}</label>
+                    <input
+                        type="number"
+                        min="-1000"
+                        max="1000"
+                        value={self.shift_vector.x().to_string()}
+                        oninput={ctx.link().callback(move |e: InputEvent| {
+                            let shift_vector = shift_vector.clone();
+                            let target: HtmlInputElement = e.target().unwrap().dyn_into().unwrap();
+                            let value = target.value_as_number() as f32;
+                            Msg::ShiftVectorChange(vec::Vector2f::new(value, shift_vector.y()))
+                        })}
+                    />
+                    <input
+                        type="number"
+                        min="-1000"
+                        max="1000"
+                        value={self.shift_vector.y().to_string()}
+                        oninput={ctx.link().callback(move |e: InputEvent| {
+                            let shift_vector = shift_vector.clone();
+                            let target: HtmlInputElement = e.target().unwrap().dyn_into().unwrap();
+                            let value = target.value_as_number() as f32;
+                            Msg::ShiftVectorChange(vec::Vector2f::new(shift_vector.x(), value))
+                        })}
+                    />
+                </div>
+                <div>
+                    <label>{"Scale vector: "}</label>
+                    <input
+                        type="number"
+                        step="0.01"
+                        min="-1000"
+                        max="1000"
+                        value={self.scale_vector.x().to_string()}
+                        oninput={ctx.link().callback(move |e: InputEvent| {
+                            let scale_vector = scale_vector.clone();
+                            let target: HtmlInputElement = e.target().unwrap().dyn_into().unwrap();
+                            let value = target.value_as_number() as f32;
+                            Msg::ScaleVectorChange(vec::Vector2f::new(value, scale_vector.y()))
+                        })}
+                    />
+                    <input
+                        type="number"
+                        step="0.01"
+                        min="-1000"
+                        max="1000"
+                        value={self.scale_vector.y().to_string()}
+                        oninput={ctx.link().callback(move |e: InputEvent| {
+                            let scale_vector = scale_vector.clone();
+                            let target: HtmlInputElement = e.target().unwrap().dyn_into().unwrap();
+                            let value = target.value_as_number() as f32;
+                            Msg::ScaleVectorChange(vec::Vector2f::new(scale_vector.x(), value))
+                        })}
+                    />
+                </div>
+                <div>
+                    <label>{"Rotate angle: "}</label>
+                    <input
+                        type="number"
+                        step="0.01"
+                        min="-1000"
+                        max="1000"
+                        value={self.rotate_angle.to_string()}
+                        oninput={ctx.link().callback(move |e: InputEvent| {
+                            let target: HtmlInputElement = e.target().unwrap().dyn_into().unwrap();
+                            let value = target.value_as_number() as f32;
+                            Msg::RotateAngleChange(value)
+                        })}
+                    />
+                </div>
+                <button onclick={ctx.link().callback(|_| Msg::ApplyTransform)}>{"Apply Transform"}</button>
+            </>
+        };
+
         html! {
             <div>
                 <div>
@@ -142,19 +311,39 @@ impl Component for App {
                     {clear_button}
                     {save_button}
                     {load_button}
+                    {finish_shape_button}
                 </div>
                 <div>
                     {canvas}
+                    {input_boxes}
                 </div>
             </div>
         }
     }
 
-    fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
+    fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             Msg::MouseDown(event) => {
                 let mouse_pos =
-                    vec::Vector2f::new_with_data(event.offset_x() as f32, event.offset_y() as f32);
+                    vec::Vector2f::new(event.offset_x() as f32, event.offset_y() as f32);
+
+                if self.shift_is_down {
+                    self.pivot = Some(mouse_pos);
+
+                    return true;
+                }
+
+                if self.ctrl_is_down {
+                    self.selected_shape = self.shapes.iter().find_map(|shape| {
+                        if shape.borrow().intersect_with_point(mouse_pos) {
+                            Some(shape.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    
+                    return true;
+                }
 
                 match self.mode {
                     Mode::Draw => {
@@ -169,11 +358,7 @@ impl Component for App {
                             .add_point(mouse_pos);
                     }
                     Mode::Rotate | Mode::Scale => {
-                        if self.pivot.is_none() {
-                            self.pivot = Some(mouse_pos);
-                        } else {
-                            self.mouse_origin = Some(mouse_pos);
-                        }
+                        self.mouse_pos = Some(mouse_pos);
                     }
                     Mode::Shift => {
                         if self.mouse_origin.is_none() {
@@ -195,27 +380,21 @@ impl Component for App {
                 true
             }
             Msg::MouseUp(_) => {
-                match self.mode {
-                    Mode::Shift => {
-                        if let (Some(mouse_origin), Some(mouse_pos)) =
-                            (self.mouse_origin, self.mouse_pos)
-                        {
-                            ctx.link().send_message(Msg::ShiftShape {
-                                vector: mouse_pos - mouse_origin,
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-
                 self.is_mouse_down = false;
                 self.mouse_origin = None;
+                self.mouse_pos = None;
+                self.mouse_delta = None;
 
                 true
             }
             Msg::MouseMove(event) => {
                 let mouse_pos =
-                    vec::Vector2f::new_with_data(event.offset_x() as f32, event.offset_y() as f32);
+                    vec::Vector2f::new(event.offset_x() as f32, event.offset_y() as f32);
+
+                self.mouse_delta = match self.mouse_pos {
+                    Some(prev_pos) => Some(mouse_pos - prev_pos),
+                    _ => None,
+                };
 
                 if self.is_mouse_down {
                     self.mouse_pos = Some(mouse_pos);
@@ -225,23 +404,35 @@ impl Component for App {
 
                 match self.mode {
                     Mode::Rotate => {
-                        if let (Some(pivot), Some(mouse_pos), Some(mouse_origin)) =
-                            (self.pivot, self.mouse_pos, self.mouse_origin)
+                        if let (Some(pivot), Some(mouse_delta), Some(mouse_pos)) =
+                            (self.pivot, self.mouse_delta, self.mouse_pos)
                         {
-                            let angle =
-                                (mouse_pos - pivot).angle() - (mouse_origin - pivot).angle();
-                            ctx.link().send_message(Msg::RotateShape { angle: angle / 30.0, pivot });
+                            if let Some(selected_shape) = &self.selected_shape {
+                                let angle = (mouse_pos - pivot).angle()
+                                    - (mouse_pos - mouse_delta - pivot).angle();
+                                selected_shape
+                                    .borrow_mut()
+                                    .rotate_rel_to_point(angle, pivot);
+                            }
                         }
                     }
                     Mode::Scale => {
-                        if let (Some(pivot), Some(mouse_pos)) = (self.pivot, self.mouse_pos) {
-                            ctx.link().send_message(Msg::ScaleShape {
-                                pivot,
-                                scale: vec::Vector2f::new_with_data(
-                                    (mouse_pos.x() - pivot.x()).abs(),
-                                    (mouse_pos.y() - pivot.y()).abs(),
-                                ),
-                            });
+                        if let (Some(pivot), Some(mouse_delta), Some(mouse_pos)) =
+                            (self.pivot, self.mouse_delta, self.mouse_pos)
+                        {
+                            if let Some(selected_shape) = &self.selected_shape {
+                                let scale = (mouse_pos - pivot).length()
+                                    / (mouse_pos - mouse_delta - pivot).length();
+                                let scale = vec::Vector2f::new(scale, scale);
+                                selected_shape.borrow_mut().scale_rel_to_point(scale, pivot);
+                            }
+                        }
+                    }
+                    Mode::Shift => {
+                        if let Some(mouse_delta) = self.mouse_delta {
+                            if let Some(selected_shape) = &self.selected_shape {
+                                selected_shape.borrow_mut().shift(mouse_delta);
+                            }
                         }
                     }
                     _ => {}
@@ -303,28 +494,68 @@ impl Component for App {
                     false
                 }
             }
+            Msg::FinishShape => {
+                self.shapes.push(Rc::new(RefCell::new(Shape::new())));
+
+                true
+            }
+            Msg::ShiftDown => {
+                self.shift_is_down = true;
+
+                true
+            }
+            Msg::ShiftUp => {
+                self.shift_is_down = false;
+
+                true
+            }
+            Msg::ShiftVectorChange(vec) => {
+                self.shift_vector = vec;
+
+                true
+            }
+            Msg::ScaleVectorChange(vec) => {
+                self.scale_vector = vec;
+
+                true
+            }
+            Msg::RotateAngleChange(angle) => {
+                self.rotate_angle = angle;
+
+                true
+            }
+            Msg::PivotChange(vec) => {
+                self.pivot = Some(vec);
+
+                true
+            }
+            Msg::ApplyTransform => {
+                if let Some(selected_shape) = &self.selected_shape {
+                    let radians = self.rotate_angle.to_radians();
+                    selected_shape.borrow_mut().shift(self.shift_vector);
+                    selected_shape.borrow_mut().scale_rel_to_point(
+                        self.scale_vector,
+                        self.pivot.unwrap_or(vec::Vector2f::new(0.0, 0.0)),
+                    );
+                    selected_shape.borrow_mut().rotate_rel_to_point(
+                        radians,
+                        self.pivot.unwrap_or(vec::Vector2f::new(0.0, 0.0)),
+                    );
+                }
+
+                true
+            }
+            Msg::CtrlDown => {
+                self.ctrl_is_down = true;
+
+                true
+            }
+            Msg::CtrlUp => {
+                self.ctrl_is_down = false;
+
+                true
+            }
             Msg::None => false,
-            Msg::ShiftShape { vector } => {
-                if let Some(shape) = self.selected_shape.clone() {
-                    shape.borrow_mut().shift(vector);
-                }
-
-                true
-            }
-            Msg::RotateShape { angle, pivot } => {
-                if let Some(shape) = self.selected_shape.clone() {
-                    shape.borrow_mut().rotate_rel_to_point(angle, pivot);
-                }
-
-                true
-            }
-            Msg::ScaleShape { scale, pivot } => {
-                if let Some(shape) = self.selected_shape.clone() {
-                    shape.borrow_mut().scale_rel_to_point(scale, pivot);
-                }
-
-                true
-            }
         }
     }
 
@@ -379,50 +610,49 @@ impl Component for App {
                 .expect("Failed to draw point");
                 ctx.fill();
             }
+        }
 
-            if let Some(pivot) = self.pivot {
-                ctx.begin_path();
-                ctx.set_fill_style(&"blue".into());
-                ctx.arc(
-                    pivot.x().into(),
-                    pivot.y().into(),
-                    5.0,
-                    0.0,
-                    2.0 * std::f64::consts::PI,
-                )
-                .expect("Failed to draw pivot");
-                ctx.fill();
-            }
+        if let Some(pivot) = self.pivot {
+            ctx.begin_path();
+            ctx.set_fill_style(&"blue".into());
+            ctx.arc(
+                pivot.x().into(),
+                pivot.y().into(),
+                5.0,
+                0.0,
+                2.0 * std::f64::consts::PI,
+            )
+            .expect("Failed to draw pivot");
+            ctx.fill();
+        }
 
-            if let (Some(mouse_pos), Some(mouse_down_origin)) = (self.mouse_pos, self.mouse_origin)
-            {
-                ctx.set_stroke_style(&"blue".into());
-                ctx.begin_path();
-                ctx.move_to(mouse_down_origin.x().into(), mouse_down_origin.y().into());
-                ctx.line_to(mouse_pos.x().into(), mouse_pos.y().into());
+        if let (Some(mouse_pos), Some(mouse_down_origin)) = (self.mouse_pos, self.mouse_origin) {
+            ctx.set_stroke_style(&"blue".into());
+            ctx.begin_path();
+            ctx.move_to(mouse_down_origin.x().into(), mouse_down_origin.y().into());
+            ctx.line_to(mouse_pos.x().into(), mouse_pos.y().into());
 
-                let arrow_length = 10.0;
-                let arrow_angle = 0.5;
+            let arrow_length = 10.0;
+            let arrow_angle = 0.5;
 
-                let arrow_dir = (mouse_down_origin - mouse_pos).normalize();
-                let arrow_left = arrow_dir.rotate(arrow_angle);
-                let arrow_right = arrow_dir.rotate(-arrow_angle);
+            let arrow_dir = (mouse_down_origin - mouse_pos).normalize();
+            let arrow_left = arrow_dir.rotate(arrow_angle);
+            let arrow_right = arrow_dir.rotate(-arrow_angle);
 
-                ctx.move_to(mouse_pos.x().into(), mouse_pos.y().into());
-                ctx.line_to(
-                    (mouse_pos + arrow_left * arrow_length).x().into(),
-                    (mouse_pos + arrow_left * arrow_length).y().into(),
-                );
+            ctx.move_to(mouse_pos.x().into(), mouse_pos.y().into());
+            ctx.line_to(
+                (mouse_pos + arrow_left * arrow_length).x().into(),
+                (mouse_pos + arrow_left * arrow_length).y().into(),
+            );
 
-                ctx.move_to(mouse_pos.x().into(), mouse_pos.y().into());
+            ctx.move_to(mouse_pos.x().into(), mouse_pos.y().into());
 
-                ctx.line_to(
-                    (mouse_pos + arrow_right * arrow_length).x().into(),
-                    (mouse_pos + arrow_right * arrow_length).y().into(),
-                );
+            ctx.line_to(
+                (mouse_pos + arrow_right * arrow_length).x().into(),
+                (mouse_pos + arrow_right * arrow_length).y().into(),
+            );
 
-                ctx.stroke();
-            }
+            ctx.stroke();
         }
     }
 }
