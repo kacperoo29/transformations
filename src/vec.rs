@@ -15,6 +15,10 @@ impl<T: Num + Copy> Vector<T, 2> {
         Self { data: [x, y] }
     }
 
+    pub fn zero() -> Self {
+        Self { data: [T::zero(), T::zero()] }
+    }
+
     pub fn x(&self) -> T {
         self.data[0]
     }
@@ -37,6 +41,45 @@ impl Vector<f32, 2> {
         let x = self.x() - other.x();
         let y = self.y() - other.y();
         (x * x + y * y).sqrt()
+    }
+
+    pub fn angle_between(&self, other: Vector<f32, 2>) -> f32 {
+        let x = self.x() - other.x();
+        let y = self.y() - other.y();
+        y.atan2(x)
+    }
+
+    pub fn normalize(&self) -> Vector<f32, 2> {
+        let length = self.length();
+        Vector::new_with_data(self.x() / length, self.y() / length)
+    }
+
+    pub fn length(&self) -> f32 {
+        (self.x() * self.x() + self.y() * self.y()).sqrt()
+    }
+
+    pub fn dot(&self, other: Vector<f32, 2>) -> f32 {
+        self.x() * other.x() + self.y() * other.y()
+    }
+
+    pub fn cross(&self, other: Vector<f32, 2>) -> f32 {
+        self.x() * other.y() - self.y() * other.x()
+    }
+
+    pub fn angle(&self) -> f32 {
+        self.y().atan2(self.x())
+    }
+
+    pub fn angle_rel_to_point(&self, point: Vector<f32, 2>) -> f32 {
+        let x = self.x() - point.x();
+        let y = self.y() - point.y();
+        y.atan2(x)
+    }
+
+    pub fn rotate(&self, angle: f32) -> Vector<f32, 2> {
+        let x = self.x() * angle.cos() - self.y() * angle.sin();
+        let y = self.x() * angle.sin() + self.y() * angle.cos();
+        Vector::new_with_data(x, y)
     }
 }
 

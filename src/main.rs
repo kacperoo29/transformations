@@ -1,8 +1,12 @@
 mod shape;
 mod vec;
 
+use std::{cell::RefCell, rc::Rc};
+
+use js_sys::Uint32Array;
 use shape::Shape;
-use wasm_bindgen::{prelude::Closure, JsCast};
+use vec::Vector2f;
+use wasm_bindgen::{prelude::Closure, JsCast, JsValue};
 use web_sys::{window, FileReader, HtmlElement, HtmlInputElement, HtmlSelectElement};
 use yew::prelude::*;
 
@@ -22,18 +26,22 @@ enum Msg {
     Clear,
     Save,
     Load(String),
+    ShiftShape { vector: Vector2f },
+    RotateShape { angle: f32, pivot: Vector2f },
+    ScaleShape { scale: Vector2f, pivot: Vector2f },
     None,
 }
 
 struct App {
     mode: Mode,
-    shapes: Vec<Shape>,
+    shapes: Vec<Rc<RefCell<Shape>>>,
     pivot: Option<vec::Vector2f>,
     canvas: NodeRef,
     canvas_ctx: Option<web_sys::CanvasRenderingContext2d>,
     is_mouse_down: bool,
-    mouse_down_origin: Option<vec::Vector2f>,
-    mouse_down_pos: Option<vec::Vector2f>,
+    mouse_origin: Option<vec::Vector2f>,
+    mouse_pos: Option<vec::Vector2f>,
+    selected_shape: Option<Rc<RefCell<Shape>>>,
 }
 
 impl Component for App {
@@ -48,8 +56,9 @@ impl Component for App {
             canvas_ctx: None,
             pivot: None,
             is_mouse_down: false,
-            mouse_down_origin: None,
-            mouse_down_pos: None,
+            mouse_origin: None,
+            mouse_pos: None,
+            selected_shape: None,
         }
     }
 
@@ -150,29 +159,96 @@ impl Component for App {
                 match self.mode {
                     Mode::Draw => {
                         if self.shapes.is_empty() {
-                            self.shapes.push(Shape::new());
+                            self.shapes.push(Rc::new(RefCell::new(Shape::new())));
                         }
 
-                        self.shapes.last_mut().unwrap().add_point(mouse_pos);
+                        self.shapes
+                            .last_mut()
+                            .unwrap()
+                            .borrow_mut()
+                            .add_point(mouse_pos);
                     }
                     Mode::Rotate | Mode::Scale => {
-                        self.pivot = Some(mouse_pos);
+                        if self.pivot.is_none() {
+                            self.pivot = Some(mouse_pos);
+                        } else {
+                            self.mouse_origin = Some(mouse_pos);
+                        }
                     }
                     Mode::Shift => {
-                        self.mouse_down_origin = Some(mouse_pos);
+                        if self.mouse_origin.is_none() {
+                            self.mouse_origin = Some(mouse_pos);
+                        }
                     }
                 }
+
+                self.selected_shape = self.shapes.iter().find_map(|shape| {
+                    if shape.borrow().intersect_with_point(mouse_pos) {
+                        Some(shape.clone())
+                    } else {
+                        None
+                    }
+                });
 
                 self.is_mouse_down = true;
 
                 true
             }
             Msg::MouseUp(_) => {
+                match self.mode {
+                    Mode::Shift => {
+                        if let (Some(mouse_origin), Some(mouse_pos)) =
+                            (self.mouse_origin, self.mouse_pos)
+                        {
+                            ctx.link().send_message(Msg::ShiftShape {
+                                vector: mouse_pos - mouse_origin,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+
                 self.is_mouse_down = false;
+                self.mouse_origin = None;
 
                 true
             }
-            Msg::MouseMove(event) => false,
+            Msg::MouseMove(event) => {
+                let mouse_pos =
+                    vec::Vector2f::new_with_data(event.offset_x() as f32, event.offset_y() as f32);
+
+                if self.is_mouse_down {
+                    self.mouse_pos = Some(mouse_pos);
+                } else {
+                    self.mouse_pos = None;
+                }
+
+                match self.mode {
+                    Mode::Rotate => {
+                        if let (Some(pivot), Some(mouse_pos), Some(mouse_origin)) =
+                            (self.pivot, self.mouse_pos, self.mouse_origin)
+                        {
+                            let angle =
+                                (mouse_pos - pivot).angle() - (mouse_origin - pivot).angle();
+                            ctx.link().send_message(Msg::RotateShape { angle: angle / 30.0, pivot });
+                        }
+                    }
+                    Mode::Scale => {
+                        if let (Some(pivot), Some(mouse_pos)) = (self.pivot, self.mouse_pos) {
+                            ctx.link().send_message(Msg::ScaleShape {
+                                pivot,
+                                scale: vec::Vector2f::new_with_data(
+                                    (mouse_pos.x() - pivot.x()).abs(),
+                                    (mouse_pos.y() - pivot.y()).abs(),
+                                ),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+
+                true
+            }
             Msg::MouseLeave(_) => false,
             Msg::ModeChange(mode) => {
                 self.mode = mode;
@@ -185,7 +261,14 @@ impl Component for App {
                 true
             }
             Msg::Save => {
-                let json = serde_json::to_string(&self.shapes).unwrap();
+                let json = serde_json::to_string(
+                    &self
+                        .shapes
+                        .iter()
+                        .map(|s| (*s.borrow()).clone())
+                        .collect::<Vec<Shape>>(),
+                )
+                .unwrap();
                 let data_str = format!("data:text/json;charset=utf-8,{}", json);
                 let a = window()
                     .unwrap()
@@ -204,8 +287,11 @@ impl Component for App {
                 false
             }
             Msg::Load(json_str) => {
-                if let Ok(shapes) = serde_json::from_str(&json_str) {
-                    self.shapes = shapes;
+                if let Ok(shapes) = serde_json::from_str::<Vec<Shape>>(&json_str) {
+                    self.shapes = shapes
+                        .iter()
+                        .map(|s| Rc::new(RefCell::new(s.clone())))
+                        .collect();
 
                     true
                 } else {
@@ -218,6 +304,27 @@ impl Component for App {
                 }
             }
             Msg::None => false,
+            Msg::ShiftShape { vector } => {
+                if let Some(shape) = self.selected_shape.clone() {
+                    shape.borrow_mut().shift(vector);
+                }
+
+                true
+            }
+            Msg::RotateShape { angle, pivot } => {
+                if let Some(shape) = self.selected_shape.clone() {
+                    shape.borrow_mut().rotate_rel_to_point(angle, pivot);
+                }
+
+                true
+            }
+            Msg::ScaleShape { scale, pivot } => {
+                if let Some(shape) = self.selected_shape.clone() {
+                    shape.borrow_mut().scale_rel_to_point(scale, pivot);
+                }
+
+                true
+            }
         }
     }
 
@@ -239,10 +346,12 @@ impl Component for App {
         ctx.clear_rect(0.0, 0.0, 800.0, 600.0);
 
         for shape in self.shapes.iter() {
+            let shape = shape.borrow();
             let points = shape.get_points();
 
             if points.len() > 2 {
                 ctx.set_fill_style(&"black".into());
+                ctx.set_stroke_style(&"black".into());
                 ctx.begin_path();
                 ctx.move_to(points[0].x().into(), points[0].y().into());
 
@@ -283,6 +392,36 @@ impl Component for App {
                 )
                 .expect("Failed to draw pivot");
                 ctx.fill();
+            }
+
+            if let (Some(mouse_pos), Some(mouse_down_origin)) = (self.mouse_pos, self.mouse_origin)
+            {
+                ctx.set_stroke_style(&"blue".into());
+                ctx.begin_path();
+                ctx.move_to(mouse_down_origin.x().into(), mouse_down_origin.y().into());
+                ctx.line_to(mouse_pos.x().into(), mouse_pos.y().into());
+
+                let arrow_length = 10.0;
+                let arrow_angle = 0.5;
+
+                let arrow_dir = (mouse_down_origin - mouse_pos).normalize();
+                let arrow_left = arrow_dir.rotate(arrow_angle);
+                let arrow_right = arrow_dir.rotate(-arrow_angle);
+
+                ctx.move_to(mouse_pos.x().into(), mouse_pos.y().into());
+                ctx.line_to(
+                    (mouse_pos + arrow_left * arrow_length).x().into(),
+                    (mouse_pos + arrow_left * arrow_length).y().into(),
+                );
+
+                ctx.move_to(mouse_pos.x().into(), mouse_pos.y().into());
+
+                ctx.line_to(
+                    (mouse_pos + arrow_right * arrow_length).x().into(),
+                    (mouse_pos + arrow_right * arrow_length).y().into(),
+                );
+
+                ctx.stroke();
             }
         }
     }

@@ -64,4 +64,21 @@ impl Shape {
             pt.set_y(y);
         }
     }
+
+    pub fn intersect_with_point(&self, point: Vector2f) -> bool {
+        let mut intersections = 0;
+        let mut prev_point = self.points.last().unwrap();
+
+        for pt in self.points.iter() {
+            if (pt.y() > point.y()) != (prev_point.y() > point.y()) {
+                let x = (point.y() - pt.y()) * (prev_point.x() - pt.x()) / (prev_point.y() - pt.y()) + pt.x();
+                if x > point.x() {
+                    intersections += 1;
+                }
+            }
+            prev_point = pt;
+        }
+
+        intersections % 2 == 1
+    }
 }
